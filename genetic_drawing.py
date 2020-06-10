@@ -9,7 +9,10 @@ from deap.tools.support import HallOfFame
 
 from drawer import *
 
+from joblib import Parallel, delayed
+from joblib import parallel_backend
 import logging as logging
+
 
 logging.basicConfig(format='%(process)d-%(levelname)s-%(message)s')
 log = logging.getLogger("genetic-drawing")
@@ -207,10 +210,12 @@ class NotebookDrawingMonitor:
 
 class GeneticDrawing:
 
-    def __init__(self, drawing_problem, seed):
+    def __init__(self, drawing_problem, seed, n_parallel_jobs=-1):
         log.info("Initializing GeneticDrawing")
 
+
         self.drawing_problem = drawing_problem
+        self.n_parallel_jobs=n_parallel_jobs
 
         random.seed(seed)
 
@@ -243,62 +248,66 @@ class GeneticDrawing:
     def generate(self, stages=100, n_generations=100, population_size=50, individual_size=10, monitor=None):
         log.info(f'Starting working. {stages} stages, {n_generations} n_genrations, {population_size} population_size, {individual_size} individual_size')
 
-        toolbox = self.toolbox
-        for s in range(stages):
-            log.debug(f'Starting stage {s}')
+        with parallel_backend('threading', n_jobs=self.n_parallel_jobs):
+            toolbox = self.toolbox
 
-            brush_range = self.restrictions.calculate_brush_size(s, stages) 
-            population = self.toolbox.population(size=population_size, individual_size=individual_size, brush_range=brush_range)
+            for s in range(stages):
+                log.debug(f'Starting stage {s}')
 
-            # Evaluate the entire population
-            fitnesses = map(toolbox.evaluate, population)
-            for ind, fit in zip(population, fitnesses):
-                ind.fitness.values = fit
-
-            for g in range(n_generations):
-                log.debug(f'Running stage {s} generation {g}')
-
-                # Select the next generation individuals
-                offspring = toolbox.select(population, len(population))
-                log.debug(f's{s}-g{g} offspring {offspring}')
-
-                # Clone the selected individuals
-                offspring = [toolbox.clone(o) for o in offspring]
-                #offspring = map(toolbox.clone, offspring)
-                log.debug(f's{s}-g{g} clone {offspring}')
-
-                if (self.crossover_prob > 0):
-                    # Apply crossover and mutation on the offspring
-                    for child1, child2 in zip(offspring[::2], offspring[1::2]):
-                        if random.random() < crossover_prob:
-                            toolbox.mate(child1, child2)
-                            del child1.fitness.values
-                            del child2.fitness.values
-                    log.debug(f's{s}-g{g} crossover {offspring}')
-
-                if (self.mutation_prob > 0):
-                    for mutant in offspring:
-                        if random.random() < self.mutation_prob:
-                            toolbox.mutate(mutant, self.drawing_problem)
-                            del mutant.fitness.values
-                    log.debug(f's{s}-g{g} mutation {offspring}')
-
-                # Evaluate the individuals with an invalid fitness
-                invalid_ind = [ind for ind in offspring if not ind.fitness.valid]
-                fitnesses = map(toolbox.evaluate, invalid_ind)
-                for ind, fit in zip(invalid_ind, fitnesses):
+                brush_range = self.restrictions.calculate_brush_size(s, stages) 
+                population = self.toolbox.population(size=population_size, individual_size=individual_size, brush_range=brush_range)
+                
+                # Evaluate the entire population
+                #fitnesses = map(toolbox.evaluate, population)
+                fitnesses = Parallel()(delayed(toolbox.evaluate)(individual) for individual in population)
+                for ind, fit in zip(population, fitnesses):
                     ind.fitness.values = fit
 
-                # The population is entirely replaced by the offspring
-                population[:] = offspring
+                for g in range(n_generations):
+                    log.info(f'Running stage {s} generation {g}')
 
-                log.debug(f's{s}-g{g} final population {offspring}')
-                if monitor is not None:
-                    monitor.submit(population)
+                    # Select the next generation individuals
+                    offspring = toolbox.select(population, len(population))
+                    log.debug(f's{s}-g{g} offspring')
 
-            log.debug(f'Stage {s} ended')
+                    # Clone the selected individuals
+                    offspring = [toolbox.clone(o) for o in offspring]
+                    #offspring = map(toolbox.clone, offspring)
+                    log.debug(f's{s}-g{g} clone')
 
-        return population
+                    if (self.crossover_prob > 0):
+                        # Apply crossover and mutation on the offspring
+                        for child1, child2 in zip(offspring[::2], offspring[1::2]):
+                            if random.random() < crossover_prob:
+                                toolbox.mate(child1, child2)
+                                del child1.fitness.values
+                                del child2.fitness.values
+                        log.debug(f's{s}-g{g} crossover')
+
+                    if (self.mutation_prob > 0):
+                        for mutant in offspring:
+                            if random.random() < self.mutation_prob:
+                                toolbox.mutate(mutant, self.drawing_problem)
+                                del mutant.fitness.values
+                        log.debug(f's{s}-g{g} mutation')
+
+                    # Evaluate the individuals with an invalid fitness
+                    invalid_ind = [ind for ind in offspring if not ind.fitness.valid]
+                    #fitnesses = map(toolbox.evaluate, invalid_ind)
+                    fitnesses = Parallel()(delayed(toolbox.evaluate)(individual) for individual in invalid_ind)
+                    for ind, fit in zip(invalid_ind, fitnesses):
+                        ind.fitness.values = fit
+
+                    # The population is entirely replaced by the offspring
+                    population[:] = offspring
+
+                    log.debug(f's{s}-g{g} final population')
+                    if monitor is not None:
+                        monitor.submit(population)
+
+                log.debug(f'Stage {s} ended')
+
+            return population
 
 
 def deap_init_individual(icls, size, brush_range, drawing_problem):
