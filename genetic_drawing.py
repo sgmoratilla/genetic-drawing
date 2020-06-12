@@ -1,86 +1,97 @@
 import cv2
 import numpy as np
-import time
-import matplotlib.pyplot as plt
-import string
 import random
-from IPython.display import clear_output
 
-class GeneticDrawing:
-    def __init__(self, img_path, seed=0, brushesRange=[[0.1, 0.3], [0.3, 0.7]]):
-        self.original_img = cv2.imread(img_path)
-        self.img_grey = cv2.cvtColor(self.original_img,cv2.COLOR_BGR2GRAY)
-        self.img_grads = self._imgGradient(self.img_grey)
-        self.myDNA = None
-        self.seed = seed
-        self.brushesRange = brushesRange
-        self.sampling_mask = None
+from deap import base
+from deap import creator 
+from deap import tools
+from deap.tools.support import HallOfFame
+
+from drawer import *
+
+from joblib import Parallel, delayed
+from joblib import parallel_backend
+import logging as logging
+
+
+logging.basicConfig(format='%(process)d-%(levelname)s-%(message)s')
+log = logging.getLogger("genetic-drawing")
+#log.setLevel(level=logging.DEBUG)
+
+class DrawingRestrictions:
+
+    def __init__(self, image_bounds, image_gradient, brush_range, n_brushes):
+        self.image_bounds = image_bounds
+        self.image_gradient = image_gradient
+        self.brush_range = brush_range
+        self.n_brushes = n_brushes
+                      
+        #IMG GRADIENT
+        self.imageMag = image_gradient[0]
+        self.imageAngles = image_gradient[1]
+
+class DrawingBrushesRange:
+    def __init__(self, brush_range_limits = [[0.1, 0.3], [0.3, 0.7]]):
+        self.brush_range_limits = brush_range_limits
+
+    def calculate_brush_range(self, stage, total_stages):
+        return [self._calculate_brush_size(self.brush_range_limits[0], stage, total_stages), self._calculate_brush_size(self.brush_range_limits[1], stage, total_stages)]
+
+    def _calculate_brush_size(self, brange, stage, total_stages):
+        bmin = brange[0]
+        bmax = brange[1]
+        t = stage / max(total_stages - 1, 1)
+        return (bmax - bmin) * (-t * t + 1) + bmin
+
+
+class DrawingProblem:
+    def __init__(self, image_path = None, color_image = None, brush_range = [1, 1], sampling_mask = None):
+        if image_path is None and color_image is None:
+            raise ValueError("Either image_path or color_image must be set")
+
+        if image_path is not None and color_image is not None:
+            raise ValueError("image_path and color_image cannot be set at once")
+
+        if color_image is not None:
+            self.color_image = color_image
+
+        if image_path is not None:
+            self.color_image = cv2.imread(image_path)
+
+        self.image_greyscale = cv2.cvtColor(self.color_image, cv2.COLOR_BGR2GRAY)
+        self.image_shape = self.image_greyscale.shape
+        self.image_gradients = image_gradient(self.image_greyscale)
+
+        self.brush_range = brush_range
+        self.sampling_mask = sampling_mask
+
+        self.restrictions = DrawingRestrictions(self.image_shape, self.image_gradients, brush_range = brush_range, n_brushes = 4)
+        self.drawer = ImageDrawer(self.image_shape)
+        self.target_image = self.image_greyscale
+
+    def set_sampling_mask(self, image_path):
+        self.sampling_mask = cv2.cvtColor(cv2.imread(image_path), cv2.COLOR_BGR2GRAY)
         
-        #start with an empty black img
-        self.imgBuffer = [np.zeros((self.img_grey.shape[0], self.img_grey.shape[1]), np.uint8)]
+    def gen_new_positions(self):
+        if self.sampling_mask is not None:
+            pos = sample_from_img(self.sampling_mask)
+            posY = pos[0][0]
+            posX = pos[1][0]
+        else:
+            posY = int(random.randrange(0, self.image_shape[0]))
+            posX = int(random.randrange(0, self.image_shape[1]))
         
-    def generate(self, stages=10, generations=100, brushstrokesCount=10, show_progress_imgs=True):
-        for s in range(stages):
-            #initialize new DNA
-            if self.sampling_mask is not None:
-                sampling_mask = self.sampling_mask
-            else:
-                sampling_mask = self.create_sampling_mask(s, stages)
-            self.myDNA = DNA(self.img_grey.shape, 
-                             self.img_grads, 
-                             self.calcBrushRange(s, stages), 
-                             canvas=self.imgBuffer[-1], 
-                             sampling_mask=sampling_mask)
-            self.myDNA.initRandom(self.img_grey, brushstrokesCount, self.seed + time.time() + s)
-            #evolve DNA
-            for g in range(generations):
-                self.myDNA.evolveDNASeq(self.img_grey, self.seed + time.time() + g)
-                clear_output(wait=True)
-                print("Stage ", s+1, ". Generation ", g+1, "/", generations)
-                if show_progress_imgs is True:
-                    #plt.imshow(sampling_mask, cmap='gray')
-                    plt.imshow(self.myDNA.get_cached_image(), cmap='gray')
-                    plt.show()
-            self.imgBuffer.append(self.myDNA.get_cached_image())
-        return self.myDNA.get_cached_image()
-    
-    def calcBrushRange(self, stage, total_stages):
-        return [self._calcBrushSize(self.brushesRange[0], stage, total_stages), self._calcBrushSize(self.brushesRange[1], stage, total_stages)]
-        
-    def set_brush_range(ranges):
-        self.brushesRange = ranges
-        
-    def set_sampling_mask(img_path):
-        self.sampling_mask = cv2.cvtColor(cv2.imread(img_path),cv2.COLOR_BGR2GRAY)
-        
+        return [posY, posX]
+
     def create_sampling_mask(self, s, stages):
         percent = 0.2
-        start_stage = int(stages*percent)
+        start_stage = int(stages * percent)
         sampling_mask = None
         if s >= start_stage:
-            t = (1.0 - (s-start_stage)/max(stages-start_stage-1,1)) * 0.25 + 0.005
+            t = (1.0 - (s - start_stage) / max(stages - start_stage - 1, 1)) * 0.25 + 0.005
             sampling_mask = self.calc_sampling_mask(t)
         return sampling_mask
-        
-    '''
-    we'd like to "guide" the brushtrokes along the image gradient direction, if such direction has large magnitude
-    in places of low magnitude, we allow for more deviation from the direction. 
-    this function precalculates angles and their magnitudes for later use inside DNA class
-    '''
-    def _imgGradient(self, img):
-        #convert to 0 to 1 float representation
-        img = np.float32(img) / 255.0 
-        # Calculate gradient 
-        gx = cv2.Sobel(img, cv2.CV_32F, 1, 0, ksize=1)
-        gy = cv2.Sobel(img, cv2.CV_32F, 0, 1, ksize=1)
-        # Python Calculate gradient magnitude and direction ( in degrees ) 
-        mag, angle = cv2.cartToPolar(gx, gy, angleInDegrees=True)
-        #normalize magnitudes
-        mag /= np.max(mag)
-        #lower contrast
-        mag = np.power(mag, 0.3)
-        return mag, angle
-    
+
     def calc_sampling_mask(self, blur_percent):
         img = np.copy(self.img_grey)
         # Calculate gradient 
@@ -93,249 +104,306 @@ class GeneticDrawing:
         if w > 1:
             mag = cv2.GaussianBlur(mag,(0,0), w, cv2.BORDER_DEFAULT)
         #ensure range from 0-255 (mostly for visual debugging, since in sampling we will renormalize it anyway)
-        scale = 255.0/mag.max()
-        return mag*scale
-        
-    
-    def _calcBrushSize(self, brange, stage, total_stages):
-        bmin = brange[0]
-        bmax = brange[1]
-        t = stage/max(total_stages-1, 1)
-        return (bmax-bmin)*(-t*t+1)+bmin
+        scale = 255.0 / mag.max()
+        return mag * scale
 
+    def error(self, proposed_image):
+        return self.__error(proposed_image, self.target_image)
+        
+    def __error(self, proposed_image, target_image):
+        # calc fitness only in the ROI
+        diff1 = cv2.subtract(target_image, proposed_image) #values are too low
+        diff2 = cv2.subtract(proposed_image, target_image) #values are too high
+        totalDiff = cv2.add(diff1, diff2)
+        totalDiff = np.sum(totalDiff)
+        return totalDiff, proposed_image
 
-def util_sample_from_img(img):
-    #possible positions to sample
-    pos = np.indices(dimensions=img.shape)
-    pos = pos.reshape(2, pos.shape[1]*pos.shape[2])
-    img_flat = np.clip(img.flatten() / img.flatten().sum(), 0.0, 1.0)
-    return pos[:, np.random.choice(np.arange(pos.shape[1]), 1, p=img_flat)]
+class DrawingIndividual:
 
-class DNA:
+    def __init__(self, n_strokes, brush_range):
+        self.n_strokes = n_strokes
+        self.fenotype = []
 
-    def __init__(self, bound, img_gradient, brushstrokes_range, canvas=None, sampling_mask=None):
-        self.DNASeq = []
-        self.bound = bound
-        
-        #CTRLS
-        self.minSize = brushstrokes_range[0] #0.1 #0.3
-        self.maxSize = brushstrokes_range[1] #0.3 # 0.7
-        self.maxBrushNumber = 4
-        self.brushSide = 300 #brush image resolution in pixels
-        self.padding = int(self.brushSide*self.maxSize / 2 + 5)
-        
-        self.canvas = canvas
-        
-        #IMG GRADIENT
-        self.imgMag = img_gradient[0]
-        self.imgAngles = img_gradient[1]
-        
-        #OTHER
-        self.brushes = self.preload_brushes('brushes/watercolor/', self.maxBrushNumber)
-        self.sampling_mask = sampling_mask
-        
-        #CACHE
-        self.cached_image = None
-        self.cached_error = None
-        
-    def preload_brushes(self, path, maxBrushNumber):
-        imgs = []
-        for i in range(maxBrushNumber):
-            imgs.append(cv2.imread(path + str(i) +'.jpg'))
-        return imgs
-    
-    def gen_new_positions(self):
-        if self.sampling_mask is not None:
-            pos = util_sample_from_img(self.sampling_mask)
-            posY = pos[0][0]
-            posX = pos[1][0]
-        else:
-            posY = int(random.randrange(0, self.bound[0]))
-            posX = int(random.randrange(0, self.bound[1]))
-        return [posY, posX]
+        self.minSize = brush_range[0] #0.1 #0.3
+        self.maxSize = brush_range[1] #0.3 # 0.7
+        self.brushSide = 300 # brush image resolution in pixels
+        self.padding = int(self.brushSide * self.maxSize / 2 + 5)
+
      
-    def initRandom(self, target_image, count, seed):
-        #initialize random DNA sequence
-        for i in range(count):
-            #random color
+    def init_random(self, drawing_problem):
+        restrictions = drawing_problem.restrictions
+
+        # initialize random fenotype
+        for i in range(self.n_strokes):
+            # random color
             color = random.randrange(0, 255)
-            #random size
-            random.seed(seed-i+4)
-            size = random.random()*(self.maxSize-self.minSize) + self.minSize
-            #random pos
-            posY, posX = self.gen_new_positions()
-            #random rotation
+            size = random.random() * (self.maxSize - self.minSize) + self.minSize
+            # random pos
+            posY, posX = drawing_problem.gen_new_positions()
+            # random rotation
             '''
             start with the angle from image gradient
             based on magnitude of that angle direction, adjust the random angle offset.
             So in places of high magnitude, we are more likely to follow the angle with our brushstroke.
             In places of low magnitude, we can have a more random brushstroke direction.
             '''
-            random.seed(seed*i/4.0-5)
-            localMag = self.imgMag[posY][posX]
-            localAngle = self.imgAngles[posY][posX] + 90 #perpendicular to the dir
-            rotation = random.randrange(-180, 180)*(1-localMag) + localAngle
-            #random brush number
-            brushNumber = random.randrange(1, self.maxBrushNumber)
-            #append data
-            self.DNASeq.append([color, posY, posX, size, rotation, brushNumber])
-        #calculate cache error and image
-        self.cached_error, self_cached_image = self.calcTotalError(target_image)
-        
-    def get_cached_image(self):
-        return self.cached_image
-            
-    def calcTotalError(self, inImg):
-        return self.__calcError(self.DNASeq, inImg)
-        
-    def __calcError(self, DNASeq, inImg):
-        #draw the DNA
-        myImg = self.drawAll(DNASeq)
+            localMag = restrictions.imageMag[posY][posX]
+            localAngle = restrictions.imageAngles[posY][posX] + 90 # perpendicular to the dir
+            rotation = random.randrange(-180, 180) * (1 - localMag) + localAngle
+            # random brush number
+            brushNumber = random.randrange(1, restrictions.n_brushes)
+            # append data
+            self.fenotype.append(Stroke(color, posY, posX, size, rotation, brushNumber))
 
-        #compare the DNA to img and calc fitness only in the ROI
-        diff1 = cv2.subtract(inImg, myImg) #values are too low
-        diff2 = cv2.subtract(myImg,inImg) #values are too high
-        totalDiff = cv2.add(diff1, diff2)
-        totalDiff = np.sum(totalDiff)
-        return (totalDiff, myImg)
-            
-    def draw(self):
-        myImg = self.drawAll(self.DNASeq)
-        return myImg
-        
-    def drawAll(self, DNASeq):
-        #set image to pre generated
-        if self.canvas is None: #if we do not have an image specified
-            inImg = np.zeros((self.bound[0], self.bound[1]), np.uint8)
-        else:
-            inImg = np.copy(self.canvas)
-        #apply padding
-        p = self.padding
-        inImg = cv2.copyMakeBorder(inImg, p,p,p,p,cv2.BORDER_CONSTANT,value=[0,0,0])
-        #draw every DNA
-        for i in range(len(DNASeq)):
-            inImg = self.__drawDNA(DNASeq[i], inImg)
-        #remove padding
-        y = inImg.shape[0]
-        x = inImg.shape[1]
-        return inImg[p:(y-p), p:(x-p)]       
-        
-    def __drawDNA(self, DNA, inImg):
-        #get DNA data
-        color = DNA[0]
-        posX = int(DNA[2]) + self.padding #add padding since indices have shifted
-        posY = int(DNA[1]) + self.padding
-        size = DNA[3]
-        rotation = DNA[4]
-        brushNumber = int(DNA[5])
 
-        #load brush alpha
-        brushImg = self.brushes[brushNumber]
-        #resize the brush
-        brushImg = cv2.resize(brushImg,None,fx=size, fy=size, interpolation = cv2.INTER_CUBIC)
-        #rotate
-        brushImg = self.__rotateImg(brushImg, rotation)
-        #brush img data
-        brushImg = cv2.cvtColor(brushImg,cv2.COLOR_BGR2GRAY)
-        rows, cols = brushImg.shape
-        
-        #create a colored canvas
-        myClr = np.copy(brushImg)
-        myClr[:, :] = color
+    def mutate(self, drawing_problem):
+        for i in range(len(self.fenotype)):
+            # TODO: don't mutate every gen
+            self.__mutate(drawing_problem, i)
 
-        #find ROI
-        inImg_rows, inImg_cols = inImg.shape
-        y_min = int(posY - rows/2)
-        y_max = int(posY + (rows - rows/2))
-        x_min = int(posX - cols/2)
-        x_max = int(posX + (cols - cols/2))
-        
-        # Convert uint8 to float
-        foreground = myClr[0:rows, 0:cols].astype(float)
-        background = inImg[y_min:y_max,x_min:x_max].astype(float) #get ROI
-        # Normalize the alpha mask to keep intensity between 0 and 1
-        alpha = brushImg.astype(float)/255.0
-        
 
-        try:
-            # Multiply the foreground with the alpha matte
-            foreground = cv2.multiply(alpha, foreground)
-            
-            # Multiply the background with ( 1 - alpha )
-            background = cv2.multiply(np.clip((1.0 - alpha), 0.0, 1.0), background)
-            # Add the masked foreground and background.
-            outImage = (np.clip(cv2.add(foreground, background), 0.0, 255.0)).astype(np.uint8)
-            
-            inImg[y_min:y_max, x_min:x_max] = outImage
-        except:
-            print('------ \n', 'in image ',inImg.shape)
-            print('pivot: ', posY, posX)
-            print('brush size: ', self.brushSide)
-            print('brush shape: ', brushImg.shape)
-            print(" Y range: ", rangeY, 'X range: ', rangeX)
-            print('bg coord: ', posY, posY+rangeY, posX, posX+rangeX)
-            print('fg: ', foreground.shape)
-            print('bg: ', background.shape)
-            print('alpha: ', alpha.shape)
-        
-        return inImg
+    def __mutate(self, drawing_problem, index):
+        restrictions = drawing_problem.restrictions
 
-        
-    def __rotateImg(self, img, angle):
-        rows,cols, channels = img.shape
-        M = cv2.getRotationMatrix2D((cols/2,rows/2),angle,1)
-        dst = cv2.warpAffine(img,M,(cols,rows))
-        return dst
-        
-              
-    def __evolveDNA(self, index, inImg, seed):
         #create a copy of the list and get its child  
-        DNASeqCopy = np.copy(self.DNASeq)           
-        child = DNASeqCopy[index]
-        
-        #mutate the child
-        #select which items to mutate
-        random.seed(seed + index)
+        fenotype_copy = np.copy(self.fenotype)           
+        child = fenotype_copy[index]
+
         indexOptions = [0,1,2,3,4,5]
         changeIndices = []
         changeCount = random.randrange(1, len(indexOptions)+1)
         for i in range(changeCount):
-            random.seed(seed + index + i + changeCount)
             indexToTake = random.randrange(0, len(indexOptions))
-            #move it the change list
             changeIndices.append(indexOptions.pop(indexToTake))
+
         #mutate selected items
         np.sort(changeIndices)
         changeIndices[:] = changeIndices[::-1]
         for changeIndex in changeIndices:
             if changeIndex == 0:# if color
-                child[0] = int(random.randrange(0, 255))
-                #print('new color: ', child[0])
+                child.color = int(random.randrange(0, 255))
+                log.debug(f'new color: {child.color}')
             elif changeIndex == 1 or changeIndex == 2:#if pos Y or X
-                child[1], child[2] = self.gen_new_positions()
-                #print('new posY: ', child[1], ' / ', self.bound[0])
-                #print('new posX: ', child[2],  ' / ', self.bound[1])  
+                child.posY, child.posX = drawing_problem.gen_new_positions()
+                log.debug(f'new posY: {child.posY} | new posX: {child.posX}')
             elif changeIndex == 3: #if size
-                child[3] = random.random()*(self.maxSize-self.minSize) + self.minSize
-                #print('new size: ', child[3])
+                child.size = random.random() * (self.maxSize - self.minSize) + self.minSize
+                log.debug(f'new size: {child.size}')
             elif changeIndex == 4: #if rotation
-                #print("trying to mutate rotatino with child[1]", child[1], " and child[2] ", child[2])
-                localMag = self.imgMag[int(child[1])][int(child[2])]
-                localAngle = self.imgAngles[int(child[1])][int(child[2])] + 90 #perpendicular
-                child[4] = random.randrange(-180, 180)*(1-localMag) + localAngle
-                #print('new rot: ', child[4])
+                log.debug(f'trying to mutate rotation with posY={child.posY}, posX={child.posX}')
+                localMag = restrictions.imageMag[int(child.posY)][int(child.posX)]
+                localAngle = restrictions.imageAngles[int(child.posY)][int(child.posX)] + 90 #perpendicular
+                child.rotation = random.randrange(-180, 180) * (1 - localMag) + localAngle
+                log.debug(f'new rotation: {child.rotation}')
             elif changeIndex == 5: #if  brush number
-                child[5] = random.randrange(1, self.maxBrushNumber)
+                child.brushNumber = random.randrange(1, restrictions.n_brushes)
                 #print('new brush: ', child[5])
-        #if child performs better replace parent
-        #print('---\n', 'newchild: \n', child)
-        child_error, child_img = self.__calcError(DNASeqCopy, inImg)
-        if  child_error < self.cached_error:
-            #print('mutation!', changeIndices)
-            self.DNASeq[index] = child[:]
-            self.cached_image = child_img
-            self.cached_error = child_error
-        
-    def evolveDNASeq(self, inImg, seed):
-        for i in range(len(self.DNASeq)):
-            self.__evolveDNA(i, inImg, seed)
+
+class NotebookDrawingMonitor:
+
+    def __init__(self, drawer, show_progress_images=True):
+        self.show_progress_images = show_progress_images
+        self.hall_of_fame = HallOfFame(5) # Saving top 5
+        self.drawer = drawer
+
+        # start with an empty black img
+        self.image_buffer = [np.zeros((drawer.image_shape[0], drawer.image_shape[1]), np.uint8)]
+
+    def submit(self, population):
+        from IPython.display import clear_output
+        import matplotlib.pyplot as plt
+
+        self.hall_of_fame.update(population)
+        fittest_image = self.drawer.draw(self.hall_of_fame[0].fenotype, self.hall_of_fame[0].padding)
+
+        self.image_buffer.append(fittest_image)
+    
+        clear_output(wait=True)
+
+        if self.show_progress_images is True:
+            plt.imshow(fittest_image, cmap='gray')
+            plt.show()
+
+    def best_image(self):
+        return self.image_buffer[-1]
+
+class GreedyNotebookDrawingMonitor:
+
+    def __init__(self, drawer, show_progress_images=True):
+        self.show_progress_images = show_progress_images
+        self.hall_of_fame = HallOfFame(5) # Saving top 5
+        self.drawer = drawer
+
+        # start with an empty black img
+        self.image_buffer = [np.zeros((drawer.image_shape[0], drawer.image_shape[1]), np.uint8)]
+
+    def submit(self, population):
+        from IPython.display import clear_output
+        import matplotlib.pyplot as plt
+
+        self.hall_of_fame = HallOfFame(1) 
+        self.hall_of_fame.update(population)
+
+        self.fittest_image = self.drawer.draw(self.hall_of_fame[0].fenotype, self.hall_of_fame[0].padding)
+    
+        clear_output(wait=True)
+
+        if self.show_progress_images is True:
+            plt.imshow(self.fittest_image, cmap='gray')
+            plt.show()
+
+    def best_image(self):
+        return self.fittest_image
+
+class GeneticDrawing:
+
+    def __init__(self, drawing_problem, n_parallel_jobs=-1):
+        log.info("Initializing GeneticDrawing")
+
+        self.drawing_problem = drawing_problem
+        self.n_parallel_jobs=n_parallel_jobs
+
+        # No crossover yet, not implemented
+        self.crossover_prob = 0
+        # Original algorithm mutated always
+        self.mutation_prob = 1
+
+        self.toolbox = base.Toolbox()
+
+        creator.create("FitnessMin", base.Fitness, weights=(-1.0,))
+        creator.create("Individual", DrawingIndividual, fitness=creator.FitnessMin)
+
+        # Custom initializer
+        self.toolbox.register("individual", deap_init_individual, creator.Individual)
+        # DEAP standard initRepeat
+        self.toolbox.register("population", deap_init_population, list, self.toolbox.individual, drawing_problem = self.drawing_problem)
+
+        # Custom mutation function
+        self.toolbox.register("select", deap_select_population)
+
+        # Custom mutation function
+        self.toolbox.register("mutate", deap_mutate_individual)
+
+        # Custom fitness function
+        self.toolbox.register("evaluate", deap_evaluate_individual, drawing_problem=drawing_problem)
+
+
+    def generate(self, n_generations=100, population_size=50, individual_size=10, monitor=None):
+        log.info(f'Starting working. n_generations {n_generations}, population_size {population_size}, individual_size {individual_size}')
+
+        with parallel_backend('threading', n_jobs=self.n_parallel_jobs):
+
+            population = self.toolbox.population(size=population_size, individual_size=individual_size)
+            
+            # Evaluate the entire population
+            #fitnesses = map(toolbox.evaluate, population)
+            fitnesses = Parallel()(delayed(self.toolbox.evaluate)(individual) for individual in population)
+            for ind, fit in zip(population, fitnesses):
+                ind.fitness.values = fit
+
+            for g in range(n_generations):
+                log.info(f'Running generation {g}')
+
+                # Select the next generation individuals
+                offspring = self.toolbox.select(population, len(population))
+                log.debug(f'g{g} offspring')
+
+                # Clone the selected individuals
+                offspring = [self.toolbox.clone(o) for o in offspring]
+                #offspring = map(toolbox.clone, offspring)
+                log.debug(f'g{g} clone')
+
+                if (self.crossover_prob > 0):
+                    # Apply crossover and mutation on the offspring
+                    for child1, child2 in zip(offspring[::2], offspring[1::2]):
+                        if random.random() < crossover_prob:
+                            self.toolbox.mate(child1, child2)
+                            del child1.fitness.values
+                            del child2.fitness.values
+                    log.debug(f'g{g} crossover')
+
+                if (self.mutation_prob > 0):
+                    for mutant in offspring:
+                        if random.random() < self.mutation_prob:
+                            self.toolbox.mutate(mutant, self.drawing_problem)
+                            del mutant.fitness.values
+                    log.debug(f'g{g} mutation')
+
+                # Evaluate the individuals with an invalid fitness
+                invalid_ind = [ind for ind in offspring if not ind.fitness.valid]
+                #fitnesses = map(toolbox.evaluate, invalid_ind)
+                fitnesses = Parallel()(delayed(self.toolbox.evaluate)(individual) for individual in invalid_ind)
+                for ind, fit in zip(invalid_ind, fitnesses):
+                    ind.fitness.values = fit
+
+                # The population is entirely replaced by the offspring
+                population[:] = offspring
+
+                log.debug(f'{g} final population')
+                if monitor is not None:
+                    monitor.submit(population)
+
+
+            return population
+
+class GreedyGeneticDrawing:
+    
+    def __init__(self, drawing_problem, brushes_range = DrawingBrushesRange(), initial_drawer = None, n_parallel_jobs=-1):
+        log.info("Initializing GreedyGeneticDrawing")
+
+        self.drawing_problem = drawing_problem
+        self.n_parallel_jobs = n_parallel_jobs
+        self.brushes_range = brushes_range
+        self.drawer = initial_drawer
+
+
+    def generate(self, stages=100, n_generations=100, population_size=50, individual_size=10):
+        log.info(f'Greedy search started. {stages} stages, {n_generations} n_generations, {population_size} population_size, {individual_size} individual_size')
+
+        if self.drawer is None:
+            drawer = ImageDrawer(image_shape = self.drawing_problem.image_shape)
+        else:
+            drawer = self.drawer
+
+        for s in range(stages):
+            monitor = GreedyNotebookDrawingMonitor(drawer)
+
+            log.info(f'Starting stage {s}')
+
+            brush_range = self.brushes_range.calculate_brush_range(s, stages) 
+            drawing_problem = DrawingProblem(color_image = self.drawing_problem.color_image, brush_range = brush_range)
+
+            ga = GeneticDrawing(drawing_problem, n_parallel_jobs = self.n_parallel_jobs)
+            ga.generate(n_generations, population_size, individual_size, monitor)
+
+            # Use best image as start of the iteration
+            drawer = ImageDrawer(canvas = monitor.best_image())
+            
+            log.info(f'Stage {s} ended')
+
+        log.info(f'Greedy search ended')
+        return monitor
+    
+
+def deap_init_individual(icls, size, drawing_problem):
+    individual = icls(n_strokes = size, brush_range = drawing_problem.brush_range)
+    individual.init_random(drawing_problem)
+    return individual
+
+def deap_init_population(pcls, init_individual, size, individual_size, drawing_problem):
+    return pcls(init_individual(individual_size, drawing_problem) for i in range(size))
+
+def deap_select_population(population, size):
+    return population
+
+def deap_mutate_individual(individual, drawing_problem):
+    individual.mutate(drawing_problem)
+    return individual
+
+def deap_evaluate_individual(individual, drawing_problem):
+    strokes = individual.fenotype
+    padding = individual.padding
+    proposal = drawing_problem.drawer.draw(strokes, padding)
+    diff, image = drawing_problem.error(proposal)
+
+    return diff,
