@@ -14,9 +14,19 @@ class Stroke:
     
 
 class ImageDrawer:
-    def __init__(self, image_shape, canvas=None, sampling_mask=None, n_brushes=4):
+    def __init__(self, image_shape=None, canvas=None, sampling_mask=None, n_brushes=4):
+        if image_shape is None and canvas is None:
+            raise ValueError("either image_shape or canvas must be specified")
+
         self.image_shape = image_shape
         self.canvas = canvas
+
+        if self.image_shape is None:
+            self.image_shape = self.canvas.shape
+
+        if self.canvas is None:
+            self.canvas = np.zeros((self.image_shape[0], self.image_shape[1]), np.uint8)
+
         self.sampling_mask = sampling_mask
         self.n_brushes = n_brushes
 
@@ -29,11 +39,8 @@ class ImageDrawer:
         return imgs
 
     def draw(self, strokes, padding):
-        #set image to pre generated
-        if self.canvas is None: #if we do not have an image specified
-            canvas = np.zeros((self.image_shape[0], self.image_shape[1]), np.uint8)
-        else:
-            canvas = np.copy(self.canvas)
+        # Don't overwrite the original canvas
+        canvas = np.copy(self.canvas)
 
         # apply padding
         p = padding

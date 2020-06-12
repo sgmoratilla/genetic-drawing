@@ -20,17 +20,21 @@ log = logging.getLogger("genetic-drawing")
 
 class DrawingRestrictions:
 
-    def __init__(self, image_bounds, image_gradient, brush_range_limits, n_brushes):
+    def __init__(self, image_bounds, image_gradient, brush_range, n_brushes):
         self.image_bounds = image_bounds
         self.image_gradient = image_gradient
-        self.brush_range_limits = brush_range_limits
+        self.brush_range = brush_range
         self.n_brushes = n_brushes
                       
         #IMG GRADIENT
         self.imageMag = image_gradient[0]
         self.imageAngles = image_gradient[1]
 
-    def calculate_brush_size(self, stage, total_stages):
+class DrawingBrushesRange:
+    def __init__(self, brush_range_limits = [[0.1, 0.3], [0.3, 0.7]]):
+        self.brush_range_limits = brush_range_limits
+
+    def calculate_brush_range(self, stage, total_stages):
         return [self._calculate_brush_size(self.brush_range_limits[0], stage, total_stages), self._calculate_brush_size(self.brush_range_limits[1], stage, total_stages)]
 
     def _calculate_brush_size(self, brange, stage, total_stages):
@@ -41,18 +45,31 @@ class DrawingRestrictions:
 
 
 class DrawingProblem:
-    def __init__(self, image_path, sampling_mask=None):
-        self.original_image = cv2.imread(image_path)
-        self.image_greyscale = cv2.cvtColor(self.original_image, cv2.COLOR_BGR2GRAY)
+    def __init__(self, image_path = None, color_image = None, brush_range = [1, 1], sampling_mask = None):
+        if image_path is None and color_image is None:
+            raise ValueError("Either image_path or color_image must be set")
+
+        if image_path is not None and color_image is not None:
+            raise ValueError("image_path and color_image cannot be set at once")
+
+        if color_image is not None:
+            self.color_image = color_image
+
+        if image_path is not None:
+            self.color_image = cv2.imread(image_path)
+
+        self.image_greyscale = cv2.cvtColor(self.color_image, cv2.COLOR_BGR2GRAY)
         self.image_shape = self.image_greyscale.shape
         self.image_gradients = image_gradient(self.image_greyscale)
+
+        self.brush_range = brush_range
         self.sampling_mask = sampling_mask
 
-        self.restrictions = DrawingRestrictions(self.image_shape, self.image_gradients, brush_range_limits = [[0.1, 0.3], [0.3, 0.7]], n_brushes = 4)
+        self.restrictions = DrawingRestrictions(self.image_shape, self.image_gradients, brush_range = brush_range, n_brushes = 4)
         self.drawer = ImageDrawer(self.image_shape)
         self.target_image = self.image_greyscale
 
-    def set_sampling_mask(image_path):
+    def set_sampling_mask(self, image_path):
         self.sampling_mask = cv2.cvtColor(cv2.imread(image_path), cv2.COLOR_BGR2GRAY)
         
     def gen_new_positions(self):
@@ -204,20 +221,47 @@ class NotebookDrawingMonitor:
         clear_output(wait=True)
 
         if self.show_progress_images is True:
-            #plt.imshow(sampling_mask, cmap='gray')
             plt.imshow(fittest_image, cmap='gray')
             plt.show()
 
+    def best_image(self):
+        return self.image_buffer[-1]
+
+class GreedyNotebookDrawingMonitor:
+
+    def __init__(self, drawer, show_progress_images=True):
+        self.show_progress_images = show_progress_images
+        self.hall_of_fame = HallOfFame(5) # Saving top 5
+        self.drawer = drawer
+
+        # start with an empty black img
+        self.image_buffer = [np.zeros((drawer.image_shape[0], drawer.image_shape[1]), np.uint8)]
+
+    def submit(self, population):
+        from IPython.display import clear_output
+        import matplotlib.pyplot as plt
+
+        self.hall_of_fame = HallOfFame(1) 
+        self.hall_of_fame.update(population)
+
+        self.fittest_image = self.drawer.draw(self.hall_of_fame[0].fenotype, self.hall_of_fame[0].padding)
+    
+        clear_output(wait=True)
+
+        if self.show_progress_images is True:
+            plt.imshow(self.fittest_image, cmap='gray')
+            plt.show()
+
+    def best_image(self):
+        return self.fittest_image
+
 class GeneticDrawing:
 
-    def __init__(self, drawing_problem, seed, n_parallel_jobs=-1):
+    def __init__(self, drawing_problem, n_parallel_jobs=-1):
         log.info("Initializing GeneticDrawing")
-
 
         self.drawing_problem = drawing_problem
         self.n_parallel_jobs=n_parallel_jobs
-
-        random.seed(seed)
 
         # No crossover yet, not implemented
         self.crossover_prob = 0
@@ -232,7 +276,6 @@ class GeneticDrawing:
         # Custom initializer
         self.toolbox.register("individual", deap_init_individual, creator.Individual)
         # DEAP standard initRepeat
-        self.restrictions = DrawingRestrictions(image_bounds = drawing_problem.image_shape, image_gradient = drawing_problem.image_gradients, brush_range_limits = drawing_problem.restrictions.brush_range_limits, n_brushes = drawing_problem.restrictions.n_brushes)
         self.toolbox.register("population", deap_init_population, list, self.toolbox.individual, drawing_problem = self.drawing_problem)
 
         # Custom mutation function
@@ -245,78 +288,106 @@ class GeneticDrawing:
         self.toolbox.register("evaluate", deap_evaluate_individual, drawing_problem=drawing_problem)
 
 
-    def generate(self, stages=100, n_generations=100, population_size=50, individual_size=10, monitor=None):
-        log.info(f'Starting working. {stages} stages, {n_generations} n_genrations, {population_size} population_size, {individual_size} individual_size')
+    def generate(self, n_generations=100, population_size=50, individual_size=10, monitor=None):
+        log.info(f'Starting working. {n_generations} n_generations, {population_size} population_size, {individual_size} individual_size')
 
         with parallel_backend('threading', n_jobs=self.n_parallel_jobs):
-            toolbox = self.toolbox
 
-            for s in range(stages):
-                log.debug(f'Starting stage {s}')
+            population = self.toolbox.population(size=population_size, individual_size=individual_size)
+            
+            # Evaluate the entire population
+            #fitnesses = map(toolbox.evaluate, population)
+            fitnesses = Parallel()(delayed(self.toolbox.evaluate)(individual) for individual in population)
+            for ind, fit in zip(population, fitnesses):
+                ind.fitness.values = fit
 
-                brush_range = self.restrictions.calculate_brush_size(s, stages) 
-                population = self.toolbox.population(size=population_size, individual_size=individual_size, brush_range=brush_range)
-                
-                # Evaluate the entire population
-                #fitnesses = map(toolbox.evaluate, population)
-                fitnesses = Parallel()(delayed(toolbox.evaluate)(individual) for individual in population)
-                for ind, fit in zip(population, fitnesses):
+            for g in range(n_generations):
+                log.info(f'Running generation {g}')
+
+                # Select the next generation individuals
+                offspring = self.toolbox.select(population, len(population))
+                log.debug(f'g{g} offspring')
+
+                # Clone the selected individuals
+                offspring = [self.toolbox.clone(o) for o in offspring]
+                #offspring = map(toolbox.clone, offspring)
+                log.debug(f'g{g} clone')
+
+                if (self.crossover_prob > 0):
+                    # Apply crossover and mutation on the offspring
+                    for child1, child2 in zip(offspring[::2], offspring[1::2]):
+                        if random.random() < crossover_prob:
+                            self.toolbox.mate(child1, child2)
+                            del child1.fitness.values
+                            del child2.fitness.values
+                    log.debug(f'g{g} crossover')
+
+                if (self.mutation_prob > 0):
+                    for mutant in offspring:
+                        if random.random() < self.mutation_prob:
+                            self.toolbox.mutate(mutant, self.drawing_problem)
+                            del mutant.fitness.values
+                    log.debug(f'g{g} mutation')
+
+                # Evaluate the individuals with an invalid fitness
+                invalid_ind = [ind for ind in offspring if not ind.fitness.valid]
+                #fitnesses = map(toolbox.evaluate, invalid_ind)
+                fitnesses = Parallel()(delayed(self.toolbox.evaluate)(individual) for individual in invalid_ind)
+                for ind, fit in zip(invalid_ind, fitnesses):
                     ind.fitness.values = fit
 
-                for g in range(n_generations):
-                    log.info(f'Running stage {s} generation {g}')
+                # The population is entirely replaced by the offspring
+                population[:] = offspring
 
-                    # Select the next generation individuals
-                    offspring = toolbox.select(population, len(population))
-                    log.debug(f's{s}-g{g} offspring')
+                log.debug(f'{g} final population')
+                if monitor is not None:
+                    monitor.submit(population)
 
-                    # Clone the selected individuals
-                    offspring = [toolbox.clone(o) for o in offspring]
-                    #offspring = map(toolbox.clone, offspring)
-                    log.debug(f's{s}-g{g} clone')
-
-                    if (self.crossover_prob > 0):
-                        # Apply crossover and mutation on the offspring
-                        for child1, child2 in zip(offspring[::2], offspring[1::2]):
-                            if random.random() < crossover_prob:
-                                toolbox.mate(child1, child2)
-                                del child1.fitness.values
-                                del child2.fitness.values
-                        log.debug(f's{s}-g{g} crossover')
-
-                    if (self.mutation_prob > 0):
-                        for mutant in offspring:
-                            if random.random() < self.mutation_prob:
-                                toolbox.mutate(mutant, self.drawing_problem)
-                                del mutant.fitness.values
-                        log.debug(f's{s}-g{g} mutation')
-
-                    # Evaluate the individuals with an invalid fitness
-                    invalid_ind = [ind for ind in offspring if not ind.fitness.valid]
-                    #fitnesses = map(toolbox.evaluate, invalid_ind)
-                    fitnesses = Parallel()(delayed(toolbox.evaluate)(individual) for individual in invalid_ind)
-                    for ind, fit in zip(invalid_ind, fitnesses):
-                        ind.fitness.values = fit
-
-                    # The population is entirely replaced by the offspring
-                    population[:] = offspring
-
-                    log.debug(f's{s}-g{g} final population')
-                    if monitor is not None:
-                        monitor.submit(population)
-
-                log.debug(f'Stage {s} ended')
 
             return population
 
+class GreedyGeneticDrawing:
+    
+    def __init__(self, drawing_problem, brushes_range=DrawingBrushesRange(), n_parallel_jobs=-1):
+        log.info("Initializing GreedyGeneticDrawing")
 
-def deap_init_individual(icls, size, brush_range, drawing_problem):
-    individual = icls(n_strokes = size, brush_range = brush_range)
+        self.drawing_problem = drawing_problem
+        self.n_parallel_jobs = n_parallel_jobs
+        self.brushes_range = brushes_range
+
+
+    def generate(self, stages=100, n_generations=100, population_size=50, individual_size=10):
+        log.info(f'Greedy search started. {stages} stages, {n_generations} n_generations, {population_size} population_size, {individual_size} individual_size')
+
+        drawer = ImageDrawer(image_shape = self.drawing_problem.image_shape)
+
+        for s in range(stages):
+            monitor = GreedyNotebookDrawingMonitor(drawer)
+
+            log.info(f'Starting stage {s}')
+
+            brush_range = self.brushes_range.calculate_brush_range(s, stages) 
+            drawing_problem = DrawingProblem(color_image = self.drawing_problem.color_image, brush_range = brush_range)
+
+            ga = GeneticDrawing(drawing_problem, n_parallel_jobs = self.n_parallel_jobs)
+            ga.generate(n_generations, population_size, individual_size, monitor)
+
+            # Use best image as start of the iteration
+            drawer = ImageDrawer(canvas = monitor.best_image())
+            
+            log.info(f'Stage {s} ended')
+
+        log.info(f'Greedy search ended')
+        return monitor
+    
+
+def deap_init_individual(icls, size, drawing_problem):
+    individual = icls(n_strokes = size, brush_range = drawing_problem.brush_range)
     individual.init_random(drawing_problem)
     return individual
 
-def deap_init_population(pcls, init_individual, size, individual_size, brush_range, drawing_problem):
-    return pcls(init_individual(individual_size, brush_range, drawing_problem) for i in range(size))
+def deap_init_population(pcls, init_individual, size, individual_size, drawing_problem):
+    return pcls(init_individual(individual_size, drawing_problem) for i in range(size))
 
 def deap_select_population(population, size):
     return population
