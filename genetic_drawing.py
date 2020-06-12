@@ -289,7 +289,7 @@ class GeneticDrawing:
 
 
     def generate(self, n_generations=100, population_size=50, individual_size=10, monitor=None):
-        log.info(f'Starting working. {n_generations} n_generations, {population_size} population_size, {individual_size} individual_size')
+        log.info(f'Starting working. n_generations {n_generations}, population_size {population_size}, individual_size {individual_size}')
 
         with parallel_backend('threading', n_jobs=self.n_parallel_jobs):
 
@@ -348,18 +348,22 @@ class GeneticDrawing:
 
 class GreedyGeneticDrawing:
     
-    def __init__(self, drawing_problem, brushes_range=DrawingBrushesRange(), n_parallel_jobs=-1):
+    def __init__(self, drawing_problem, brushes_range = DrawingBrushesRange(), initial_drawer = None, n_parallel_jobs=-1):
         log.info("Initializing GreedyGeneticDrawing")
 
         self.drawing_problem = drawing_problem
         self.n_parallel_jobs = n_parallel_jobs
         self.brushes_range = brushes_range
+        self.drawer = initial_drawer
 
 
     def generate(self, stages=100, n_generations=100, population_size=50, individual_size=10):
         log.info(f'Greedy search started. {stages} stages, {n_generations} n_generations, {population_size} population_size, {individual_size} individual_size')
 
-        drawer = ImageDrawer(image_shape = self.drawing_problem.image_shape)
+        if self.drawer is None:
+            drawer = ImageDrawer(image_shape = self.drawing_problem.image_shape)
+        else:
+            drawer = self.drawer
 
         for s in range(stages):
             monitor = GreedyNotebookDrawingMonitor(drawer)
