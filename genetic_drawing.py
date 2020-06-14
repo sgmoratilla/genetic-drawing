@@ -16,7 +16,6 @@ import logging as logging
 
 logging.basicConfig(format='%(process)d-%(levelname)s-%(message)s')
 log = logging.getLogger("genetic-drawing")
-#log.setLevel(level=logging.DEBUG)
 
 class DrawingRestrictions:
 
@@ -218,9 +217,8 @@ class NotebookDrawingMonitor:
 
         self.image_buffer.append(fittest_image)
     
-        clear_output(wait=True)
-
         if self.show_progress_images is True:
+            clear_output(wait=True)
             plt.imshow(fittest_image, cmap='gray')
             plt.show()
 
@@ -229,7 +227,7 @@ class NotebookDrawingMonitor:
 
 class GreedyNotebookDrawingMonitor:
 
-    def __init__(self, drawer, show_progress_images=True):
+    def __init__(self, drawer=None, show_progress_images=True):
         self.show_progress_images = show_progress_images
         self.hall_of_fame = HallOfFame(5) # Saving top 5
         self.drawer = drawer
@@ -302,7 +300,7 @@ class GeneticDrawing:
                 ind.fitness.values = fit
 
             for g in range(n_generations):
-                log.info(f'Running generation {g}')
+                log.debug(f'Running generation {g}')
 
                 # Select the next generation individuals
                 offspring = self.toolbox.select(population, len(population))
@@ -366,11 +364,11 @@ class GreedyGeneticDrawing:
             drawer = self.drawer
 
         for s in range(stages):
-            monitor = GreedyNotebookDrawingMonitor(drawer)
-
-            log.info(f'Starting stage {s}')
+            monitor = GreedyNotebookDrawingMonitor(drawer, False)
 
             brush_range = self.brushes_range.calculate_brush_range(s, stages) 
+            log.info(f'Starting stage {s} with brush range {brush_range}')
+
             drawing_problem = DrawingProblem(color_image = self.drawing_problem.color_image, brush_range = brush_range)
 
             ga = GeneticDrawing(drawing_problem, n_parallel_jobs = self.n_parallel_jobs)
