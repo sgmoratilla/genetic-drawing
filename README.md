@@ -10,7 +10,7 @@ There is a Conda environment included with this project.
 Just do
 ```
 conda env create -n genetic-drawning -f conda-environment.yml
-conda active genetic-drawning
+conda activate genetic-drawning
 ```
 
 Or install these Python 3 libraries:
