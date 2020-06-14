@@ -1,4 +1,5 @@
 import cv2
+import os
 import numpy as np
 import random
 
@@ -52,11 +53,14 @@ class DrawingProblem:
         if image_path is not None and color_image is not None:
             raise ValueError("image_path and color_image cannot be set at once")
 
+        if image_path is not None:
+            if os.path.exists(image_path) and os.path.isfile(image_path):
+                self.color_image = cv2.imread(image_path)
+            else:
+                raise ValueError(f"File {image_path} doesn't exist")
+              
         if color_image is not None:
             self.color_image = color_image
-
-        if image_path is not None:
-            self.color_image = cv2.imread(image_path)
 
         self.image_greyscale = cv2.cvtColor(self.color_image, cv2.COLOR_BGR2GRAY)
         self.image_shape = self.image_greyscale.shape
