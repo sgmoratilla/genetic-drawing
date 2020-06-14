@@ -13,12 +13,9 @@ conda env create -n genetic-drawning -f conda-environment.yml
 conda activate genetic-drawning
 ```
 
-Or install these Python 3 libraries:
-
-* opencv 3.4.1
-* numpy 1.16.2
-* matplotlib 3.0.3
-* Jupyter 
-* and Jupyter Notebook
-
 To start, open the GeneticDrawing.ipynb and run the example code
+
+## Credits:
+- Base GA code: https://github.com/anopara/genetic-drawing
+- StopWatch: https://github.com/ravener/stopwatch.py
+- Thanks to https://github.com/danieloop for listening my Python complains
