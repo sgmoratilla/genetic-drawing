@@ -14,6 +14,8 @@ from joblib import Parallel, delayed
 from joblib import parallel_backend
 import logging as logging
 
+import matplotlib.pyplot as plt
+from IPython.display import clear_output
 
 logging.basicConfig(format='%(process)d-%(levelname)s-%(message)s')
 log = logging.getLogger("genetic-drawing")
@@ -45,7 +47,7 @@ class DrawingBrushesRange:
 
 
 class DrawingProblem:
-    def __init__(self, image_path = None, color_image = None, brush_range = [1, 1], sampling_mask = None):
+    def __init__(self, image_path = None, color_image = None, brush_range = [1, 1], sampling_mask = None, initial_drawer = None):
         if image_path is None and color_image is None:
             raise ValueError("Either image_path or color_image must be set")
 
@@ -69,7 +71,10 @@ class DrawingProblem:
         self.sampling_mask = sampling_mask
 
         self.restrictions = DrawingRestrictions(self.image_shape, self.image_gradients, brush_range = brush_range, n_brushes = 4)
-        self.drawer = ImageDrawer(self.image_shape)
+        if initial_drawer is None:
+            self.drawer = ImageDrawer(self.image_shape)
+        else:
+            self.drawer = initial_drawer
         self.target_image = self.image_greyscale
 
     def set_sampling_mask(self, image_path):
@@ -123,16 +128,22 @@ class DrawingProblem:
 
 class DrawingIndividual:
 
-    def __init__(self, n_strokes, brush_range):
-        self.n_strokes = n_strokes
-        self.fenotype = []
+    def __init__(self, n_strokes, brush_range, initial_fenotype = None):
+        if initial_fenotype is None:
+            self.n_strokes = n_strokes
+            self.fenotype = []
+        else:
+            self.n_strikes = len(initial_fenotype)
+            self.fenotype = initial_fenotype
 
         self.minSize = brush_range[0] #0.1 #0.3
         self.maxSize = brush_range[1] #0.3 # 0.7
         self.brushSide = 300 # brush image resolution in pixels
         self.padding = int(self.brushSide * self.maxSize / 2 + 5)
 
-     
+    def clone(self):
+        return DrawingIndividual(self.n_strokes, brush_range=[self.minSize, self.maxSize], initial_fenotype=self.fenotype.copy())
+
     def init_random(self, drawing_problem):
         restrictions = drawing_problem.restrictions
 
@@ -161,11 +172,10 @@ class DrawingIndividual:
 
     def mutate(self, drawing_problem):
         for i in range(len(self.fenotype)):
-            # TODO: don't mutate every gen
-            self.__mutate(drawing_problem, i)
+            self.mutate_gene(drawing_problem, i)
 
 
-    def __mutate(self, drawing_problem, index):
+    def mutate_gene(self, drawing_problem, index):
         restrictions = drawing_problem.restrictions
 
         #create a copy of the list and get its child  
@@ -213,16 +223,13 @@ class NotebookDrawingMonitor:
         self.image_buffer = [np.zeros((drawer.image_shape[0], drawer.image_shape[1]), np.uint8)]
 
     def submit(self, population):
-        from IPython.display import clear_output
-        import matplotlib.pyplot as plt
-
         self.hall_of_fame.update(population)
         fittest_image = self.drawer.draw(self.hall_of_fame[0].fenotype, self.hall_of_fame[0].padding)
 
         self.image_buffer.append(fittest_image)
     
         if self.show_progress_images is True:
-            clear_output(wait=True)
+            plt.clf()
             plt.imshow(fittest_image, cmap='gray')
             plt.show()
 
@@ -231,26 +238,18 @@ class NotebookDrawingMonitor:
 
 class GreedyNotebookDrawingMonitor:
 
-    def __init__(self, drawer=None, show_progress_images=True):
+    def __init__(self, drawer, show_progress_images=True):
         self.show_progress_images = show_progress_images
-        self.hall_of_fame = HallOfFame(5) # Saving top 5
         self.drawer = drawer
-
-        # start with an empty black img
-        self.image_buffer = [np.zeros((drawer.image_shape[0], drawer.image_shape[1]), np.uint8)]
-
+       
     def submit(self, population):
-        from IPython.display import clear_output
-        import matplotlib.pyplot as plt
+        hall_of_fame = HallOfFame(1) 
+        hall_of_fame.update(population)
 
-        self.hall_of_fame = HallOfFame(1) 
-        self.hall_of_fame.update(population)
-
-        self.fittest_image = self.drawer.draw(self.hall_of_fame[0].fenotype, self.hall_of_fame[0].padding)
+        self.fittest_image = self.drawer.draw(hall_of_fame[0].fenotype, hall_of_fame[0].padding)
     
-        clear_output(wait=True)
-
         if self.show_progress_images is True:
+            clear_output(wait=True)
             plt.imshow(self.fittest_image, cmap='gray')
             plt.show()
 
@@ -293,7 +292,9 @@ class GeneticDrawing:
     def generate(self, n_generations=100, population_size=50, individual_size=10, monitor=None):
         log.info(f'Starting working. n_generations {n_generations}, population_size {population_size}, individual_size {individual_size}')
 
-        with parallel_backend('threading', n_jobs=self.n_parallel_jobs):
+        try: 
+            if population_size != 1:
+                parallel_backend = parallel_backend('threading', n_jobs=self.n_parallel_jobs)
 
             population = self.toolbox.population(size=population_size, individual_size=individual_size)
             
@@ -347,33 +348,33 @@ class GeneticDrawing:
 
 
             return population
+        finally:
+            if parallel_backend is not None:
+                parallel_backend.close()
 
 class GreedyGeneticDrawing:
     
-    def __init__(self, drawing_problem, brushes_range = DrawingBrushesRange(), initial_drawer = None, n_parallel_jobs=-1):
+    def __init__(self, drawing_problem, brushes_range = DrawingBrushesRange(), n_parallel_jobs=-1):
         log.info("Initializing GreedyGeneticDrawing")
 
         self.drawing_problem = drawing_problem
         self.n_parallel_jobs = n_parallel_jobs
         self.brushes_range = brushes_range
-        self.drawer = initial_drawer
 
 
-    def generate(self, stages=100, n_generations=100, population_size=50, individual_size=10):
-        log.info(f'Greedy search started. {stages} stages, {n_generations} n_generations, {population_size} population_size, {individual_size} individual_size')
+    def generate(self, stages=100, n_generations=100, population_size=50, individual_size=10, drawer=None, show_progress_images=False):
+        log.info(f'Greedy GA. {stages} stages, {n_generations} n_generations, {population_size} population_size, {individual_size} individual_size')
 
-        if self.drawer is None:
+        if drawer is None:
             drawer = ImageDrawer(image_shape = self.drawing_problem.image_shape)
-        else:
-            drawer = self.drawer
 
         for s in range(stages):
-            monitor = GreedyNotebookDrawingMonitor(drawer, False)
+            monitor = GreedyNotebookDrawingMonitor(drawer, show_progress_images)
 
             brush_range = self.brushes_range.calculate_brush_range(s, stages) 
             log.info(f'Starting stage {s} with brush range {brush_range}')
 
-            drawing_problem = DrawingProblem(color_image = self.drawing_problem.color_image, brush_range = brush_range)
+            drawing_problem = DrawingProblem(color_image = self.drawing_problem.color_image, brush_range = brush_range, initial_drawer = drawer)
 
             ga = GeneticDrawing(drawing_problem, n_parallel_jobs = self.n_parallel_jobs)
             ga.generate(n_generations, population_size, individual_size, monitor)
@@ -383,7 +384,55 @@ class GreedyGeneticDrawing:
             
             log.info(f'Stage {s} ended')
 
-        log.info(f'Greedy search ended')
+        log.info(f'Greedy GA ended')
+        return monitor
+
+class GreedyIterativeDrawing:
+    
+    def __init__(self, drawing_problem, brushes_range = DrawingBrushesRange(), n_parallel_jobs=-1):
+        log.info("Initializing GreedyIterativeDrawing")
+
+        self.drawing_problem = drawing_problem
+        self.n_parallel_jobs = n_parallel_jobs
+        self.brushes_range = brushes_range
+
+
+    def generate(self, stages=100, n_trials=100, individual_size=10, drawer=None, show_progress_images=False):
+        log.info(f'Greedy iterative search started. {stages} stages, {n_trials} n_trials, {individual_size} individual_size')
+
+        if drawer is None:
+            drawer = ImageDrawer(image_shape = self.drawing_problem.image_shape)
+
+
+        for s in range(stages):
+            brush_range = self.brushes_range.calculate_brush_range(s, stages) 
+
+            drawing_problem = DrawingProblem(color_image = self.drawing_problem.color_image, brush_range = brush_range, initial_drawer = drawer)
+            monitor = GreedyNotebookDrawingMonitor(drawer, show_progress_images)
+
+            log.info(f'Starting stage {s} with brush range {brush_range}')
+
+            individual = DrawingIndividual(n_strokes=individual_size, brush_range=brush_range)
+            individual.init_random(drawing_problem)
+
+            best_test_error = None
+            best_image = None
+            for t in range(n_trials):    
+                for g in range(individual_size):
+                    test = individual.clone()
+                    test.mutate_gene(drawing_problem, g)
+
+                    error, image = deap_evaluate_individual(test, drawing_problem)
+                    if error < best_test_error:
+                        individual = test
+                        best_test_error = error
+                        best_image = image
+
+            # Restart search using the last previous best point
+            drawer = ImageDrawer(canvas = best_image)
+            log.info(f'Stage {s} ended')
+
+        log.info(f'Greedy iterative search ended')
         return monitor
     
 
@@ -408,4 +457,4 @@ def deap_evaluate_individual(individual, drawing_problem):
     proposal = drawing_problem.drawer.draw(strokes, padding)
     diff, image = drawing_problem.error(proposal)
 
-    return diff,
+    return diff, image
