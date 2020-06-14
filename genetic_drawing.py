@@ -2,6 +2,7 @@ import cv2
 import os
 import numpy as np
 import random
+import math
 
 from deap import base
 from deap import creator 
@@ -128,13 +129,13 @@ class DrawingProblem:
 
 class DrawingIndividual:
 
-    def __init__(self, n_strokes, brush_range, initial_fenotype = None):
-        if initial_fenotype is None:
+    def __init__(self, n_strokes, brush_range, initial_genotype = None):
+        if initial_genotype is None:
             self.n_strokes = n_strokes
-            self.fenotype = []
+            self.genotype = []
         else:
-            self.n_strikes = len(initial_fenotype)
-            self.fenotype = initial_fenotype
+            self.n_strokes = len(initial_genotype)
+            self.genotype = initial_genotype
 
         self.minSize = brush_range[0] #0.1 #0.3
         self.maxSize = brush_range[1] #0.3 # 0.7
@@ -142,12 +143,12 @@ class DrawingIndividual:
         self.padding = int(self.brushSide * self.maxSize / 2 + 5)
 
     def clone(self):
-        return DrawingIndividual(self.n_strokes, brush_range=[self.minSize, self.maxSize], initial_fenotype=self.fenotype.copy())
+        return DrawingIndividual(self.n_strokes, brush_range=[self.minSize, self.maxSize], initial_genotype=self.genotype.copy())
 
     def init_random(self, drawing_problem):
         restrictions = drawing_problem.restrictions
 
-        # initialize random fenotype
+        # initialize random genotype
         for i in range(self.n_strokes):
             # random color
             color = random.randrange(0, 255)
@@ -167,11 +168,11 @@ class DrawingIndividual:
             # random brush number
             brushNumber = random.randrange(1, restrictions.n_brushes)
             # append data
-            self.fenotype.append(Stroke(color, posY, posX, size, rotation, brushNumber))
+            self.genotype.append(Stroke(color, posY, posX, size, rotation, brushNumber))
 
 
     def mutate(self, drawing_problem):
-        for i in range(len(self.fenotype)):
+        for i in range(len(self.genotype)):
             self.mutate_gene(drawing_problem, i)
 
 
@@ -179,8 +180,8 @@ class DrawingIndividual:
         restrictions = drawing_problem.restrictions
 
         #create a copy of the list and get its child  
-        fenotype_copy = np.copy(self.fenotype)           
-        child = fenotype_copy[index]
+        genotype_copy = np.copy(self.genotype)           
+        child = genotype_copy[index]
 
         indexOptions = [0,1,2,3,4,5]
         changeIndices = []
@@ -224,19 +225,19 @@ class NotebookDrawingMonitor:
 
     def submit(self, population):
         self.hall_of_fame.update(population)
-        fittest_image = self.drawer.draw(self.hall_of_fame[0].fenotype, self.hall_of_fame[0].padding)
+        fittest_image = self.drawer.draw(self.hall_of_fame[0].genotype, self.hall_of_fame[0].padding)
 
         self.image_buffer.append(fittest_image)
     
         if self.show_progress_images is True:
-            plt.clf()
+            clear_output(wait=True)
             plt.imshow(fittest_image, cmap='gray')
             plt.show()
 
     def best_image(self):
         return self.image_buffer[-1]
 
-class GreedyNotebookDrawingMonitor:
+class GreedyGeneticNotebookDrawingMonitor:
 
     def __init__(self, drawer, show_progress_images=True):
         self.show_progress_images = show_progress_images
@@ -246,7 +247,7 @@ class GreedyNotebookDrawingMonitor:
         hall_of_fame = HallOfFame(1) 
         hall_of_fame.update(population)
 
-        self.fittest_image = self.drawer.draw(hall_of_fame[0].fenotype, hall_of_fame[0].padding)
+        self.fittest_image = self.drawer.draw(hall_of_fame[0].genotype, hall_of_fame[0].padding)
     
         if self.show_progress_images is True:
             clear_output(wait=True)
@@ -255,6 +256,35 @@ class GreedyNotebookDrawingMonitor:
 
     def best_image(self):
         return self.fittest_image
+
+class GreedyIterativeNotebookDrawingMonitor:
+
+    def __init__(self, drawer, show_progress_images=True):
+        self.show_progress_images = show_progress_images
+        self.drawer = drawer
+
+        # start with an empty black img
+        self.image_buffer = [np.zeros((drawer.image_shape[0], drawer.image_shape[1]), np.uint8)]
+       
+    def submit(self, individual):
+        self.fittest_image = self.drawer.draw(individual.genotype, individual.padding)
+    
+        self.image_buffer.append(fittest_image)
+
+        if self.show_progress_images is True:
+            clear_output(wait=True)
+            plt.imshow(self.fittest_image, cmap='gray')
+            plt.show()
+
+    def best_image(self):
+        return self.fittest_image
+
+    def save_images(self, path, index_start):
+        if not os.path.exists(path):
+            os.mkdir(path)
+        for i in range(len(self.image_buffer)):
+            j = index_start + i
+            cv2.imwrite(os.path.join(path, f"{j:06d}.png"), self.image_buffer[i])
 
 class GeneticDrawing:
 
@@ -292,6 +322,7 @@ class GeneticDrawing:
     def generate(self, n_generations=100, population_size=50, individual_size=10, monitor=None):
         log.info(f'Starting working. n_generations {n_generations}, population_size {population_size}, individual_size {individual_size}')
 
+        parallel_backend = None
         try: 
             if population_size != 1:
                 parallel_backend = parallel_backend('threading', n_jobs=self.n_parallel_jobs)
@@ -369,7 +400,7 @@ class GreedyGeneticDrawing:
             drawer = ImageDrawer(image_shape = self.drawing_problem.image_shape)
 
         for s in range(stages):
-            monitor = GreedyNotebookDrawingMonitor(drawer, show_progress_images)
+            monitor = GreedyGeneticNotebookDrawingMonitor(drawer, show_progress_images)
 
             brush_range = self.brushes_range.calculate_brush_range(s, stages) 
             log.info(f'Starting stage {s} with brush range {brush_range}')
@@ -389,11 +420,10 @@ class GreedyGeneticDrawing:
 
 class GreedyIterativeDrawing:
     
-    def __init__(self, drawing_problem, brushes_range = DrawingBrushesRange(), n_parallel_jobs=-1):
+    def __init__(self, drawing_problem, brushes_range = DrawingBrushesRange()):
         log.info("Initializing GreedyIterativeDrawing")
 
         self.drawing_problem = drawing_problem
-        self.n_parallel_jobs = n_parallel_jobs
         self.brushes_range = brushes_range
 
 
@@ -408,14 +438,14 @@ class GreedyIterativeDrawing:
             brush_range = self.brushes_range.calculate_brush_range(s, stages) 
 
             drawing_problem = DrawingProblem(color_image = self.drawing_problem.color_image, brush_range = brush_range, initial_drawer = drawer)
-            monitor = GreedyNotebookDrawingMonitor(drawer, show_progress_images)
+            monitor = GreedyIterativeNotebookDrawingMonitor(drawer, show_progress_images)
 
             log.info(f'Starting stage {s} with brush range {brush_range}')
 
             individual = DrawingIndividual(n_strokes=individual_size, brush_range=brush_range)
             individual.init_random(drawing_problem)
 
-            best_test_error = None
+            best_test_error = math.inf
             best_image = None
             for t in range(n_trials):    
                 for g in range(individual_size):
@@ -427,6 +457,7 @@ class GreedyIterativeDrawing:
                         individual = test
                         best_test_error = error
                         best_image = image
+                        monitor.submit(individual)
 
             # Restart search using the last previous best point
             drawer = ImageDrawer(canvas = best_image)
@@ -452,7 +483,7 @@ def deap_mutate_individual(individual, drawing_problem):
     return individual
 
 def deap_evaluate_individual(individual, drawing_problem):
-    strokes = individual.fenotype
+    strokes = individual.genotype
     padding = individual.padding
     proposal = drawing_problem.drawer.draw(strokes, padding)
     diff, image = drawing_problem.error(proposal)

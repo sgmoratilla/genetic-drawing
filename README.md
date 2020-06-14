@@ -1,9 +1,15 @@
 # Genetic Drawing
 This is a refactor of https://github.com/anopara/genetic-drawing
 
-@anopara inspired me to refactor this project and 
-include some new operators to the genetic algorithm.
+@anopara inspired me to investigate about this subject.
+This refactor includes:
+- New Genetic Algorithm structures.
+- Support to tune operators.
+- Two notebooks to test the original algorithm against the new implementation.
+- Conda environment.
+- Logging and other tools to ease development.
 
+You can follow up this topic at https://sergiomoratilla.com/2020-06-20-teaching-a-computer-to-draw/
 
 ## Python
 There is a Conda environment included with this project.
@@ -13,7 +19,9 @@ conda env create -n genetic-drawning -f conda-environment.yml
 conda activate genetic-drawning
 ```
 
-To start, open the GeneticDrawing.ipynb and run the example code
+To start, open either of the notebooks:
+- RandomGreedyDrawing: original algorithm reimplemented.
+- GeneticDrawing.ipynb: new genetic algorithm implementation.
 
 ## Credits:
 - Base GA code: https://github.com/anopara/genetic-drawing
