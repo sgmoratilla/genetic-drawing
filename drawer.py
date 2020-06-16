@@ -131,7 +131,7 @@ this function precalculates angles and their magnitudes for later use inside DNA
 '''
 def image_gradient(img):
     #convert to 0 to 1 float representation
-    img = np.float32(img) / 255.0 
+    img = np.float32(img) / np.float32(np.iinfo(img.dtype).max) 
     # Calculate gradient 
     gx = cv2.Sobel(img, cv2.CV_32F, 1, 0, ksize=1)
     gy = cv2.Sobel(img, cv2.CV_32F, 0, 1, ksize=1)
