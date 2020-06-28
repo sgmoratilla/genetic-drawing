@@ -9,21 +9,21 @@ This refactor includes:
 - Conda environment.
 - Logging and other tools to ease development.
 
-You can follow up this topic at https://sergiomoratilla.com/2020-06-20-teaching-a-computer-to-draw/
+You can follow up this topic at https://sergiomoratilla.com/2020-06-28-teaching-a-computer-to-draw/
 
 ## Python
 There is a Conda environment included with this project.
 Just do
 ```
-conda env create -n genetic-drawning -f conda-environment.yml
-conda activate genetic-drawning
+conda env create -n genetic-drawing -f conda-environment.yml
+conda activate genetic-drawing
 ```
 
 To start, open either of the notebooks:
 - RandomGreedyDrawing: original algorithm reimplemented.
 - GeneticDrawing.ipynb: new genetic algorithm implementation.
 
-## Credits:
+## Credits
 - Base GA code: https://github.com/anopara/genetic-drawing
 - StopWatch: https://github.com/ravener/stopwatch.py
 - Thanks to https://github.com/danieloop for listening my Python complains
