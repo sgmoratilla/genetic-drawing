@@ -9,7 +9,7 @@ This refactor includes:
 - Conda environment.
 - Logging and other tools to ease development.
 
-You can follow up this topic at https://sergiomoratilla.com/2020-06-28-teaching-a-computer-to-draw/
+You can follow up this topic at https://sgmoratilla.com/2020-06-28-teaching-a-computer-to-draw/
 
 ## Python
 There is a Conda environment included with this project.
